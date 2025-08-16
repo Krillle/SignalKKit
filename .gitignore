@@ -1,0 +1,79 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Xcode
+**/*.xcuserdata/
+**/*.xcuserstate
+**/*.xcscmblueprint
+**/*.xccheckout
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/xcode/xcuserdata/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Swift/Apple tooling
+*.swiftpm
+
+# SPM build artifacts sometimes at repo root
+Package.resolved.bak
+
+# CocoaPods (if ever added)
+Pods/
+
+# Carthage (if ever added)
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# Coverage
+*.xcresult
+*.profraw
+*.profdata
+
+# Logs
+*.log
+
+# General
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node (if present)
+node_modules/
+.npm/
+
+# SPM/Xcode extra checks
+.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
