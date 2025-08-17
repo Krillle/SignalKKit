@@ -3,11 +3,13 @@ import Foundation
 public struct SignalKDelta: Codable {
     public struct Update: Codable {
         public struct Value: Codable {
-            public let path: String
+            public let path: String? // Some servers put path only at update-level
             public let value: CodableValue
         }
+        public let path: String? // Optional update-level path
         public let values: [Value]
     }
+    public let context: String?
     public let updates: [Update]
 }
 

@@ -3,22 +3,25 @@ import Combine
 import Starscream
 
 public final class SignalKClient: ObservableObject, WebSocketDelegate {
-    @Published public var courseOverGround: Double?
-    @Published public var speedOverGround: Double?
-    @Published public var latitude: Double?
-    @Published public var longitude: Double?
-    @Published public var waterTemperature: Double?
-    @Published public var tankLevels: [String: Double] = [:]
-    // Generic store for arbitrary subscribed path -> value (Double or String for now)
+    // Generic store for arbitrary subscribed path -> value
     @Published public var pathValues: [String: CodableValue] = [:]
 
     private var socket: WebSocket?
     private var cancellables = Set<AnyCancellable>()
+    private var connected = false
+    @Published public private(set) var isConnected: Bool = false
 
     public init() {}
 
-    // Optional: turn off automatic subscribe=all if apps want manual control
+    // Optional: automatic subscribe=all on by default for compatibility; apps can turn off
     public var subscribeAllOnConnect: Bool = true
+
+    // Signal K context (default self vessel)
+    public var context: String = "vessels.self"
+    // Optional auth token (Bearer)
+    public var authToken: String?
+    // Optional TLS override; when nil we auto-detect by port
+    public var useTLS: Bool?
 
     // Queue of subscriptions requested before or after connect
     private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
@@ -29,16 +32,40 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         sendPendingSubscriptionsIfConnected()
     }
 
+    // Unsubscribe from paths
+    public func unsubscribe(paths: [String]) {
+        guard let socket = self.socket, connected, !paths.isEmpty else { return }
+        let message: [String: Any] = [
+            "context": context,
+            "unsubscribe": paths.map { ["path": $0] }
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: message, options: []),
+           let json = String(data: data, encoding: .utf8) {
+            socket.write(string: json)
+        }
+    }
+
     public func connect(to host: String, port: Int) {
         // Optionally request server-side subscription to all updates
+        let scheme: String
+        if let useTLS = useTLS {
+            scheme = useTLS ? "wss" : "ws"
+        } else {
+            scheme = (port == 443 || port == 3443) ? "wss" : "ws"
+        }
         let urlString: String
         if subscribeAllOnConnect {
-            urlString = "ws://\(host):\(port)/signalk/v1/stream?subscribe=all"
+            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream?subscribe=all"
         } else {
-            urlString = "ws://\(host):\(port)/signalk/v1/stream"
+            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream"
         }
         let url = URL(string: urlString)!
-        var request = URLRequest(url: url)
+    var request = URLRequest(url: url)
+    // Some Signal K servers expect subprotocol negotiation
+    request.setValue("signalk, ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        if let token = authToken, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         socket = WebSocket(request: request)
         socket?.delegate = self
         socket?.connect()
@@ -51,38 +78,37 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     public func didReceive(event: WebSocketEvent, client: WebSocketClient) {
         switch event {
         case .connected(_):
-            // Proactively subscribe to key paths and any pending custom requests
-            var subscribe: [[String: Any]] = [
-                ["path": "navigation.position", "policy": "instant"],
-                ["path": "navigation.courseOverGroundTrue", "policy": "instant"],
-                ["path": "navigation.speedOverGround", "policy": "instant"],
-                ["path": "environment.water.temperature", "policy": "instant"]
-            ]
-            subscribe.append(contentsOf: pendingSubscriptions.map { $0.toDictionary() })
-            let subscribeMessage: [String: Any] = [
-                "context": "vessels.self",
-                "subscribe": subscribe
-            ]
-            if let data = try? JSONSerialization.data(withJSONObject: subscribeMessage, options: []),
-               let json = String(data: data, encoding: .utf8) {
-                client.write(string: json)
-            }
+            // Send any pending custom requests
+            connected = true
+            isConnected = true
+            sendPendingSubscriptionsIfConnected()
         case .text(let text):
             parseDelta(jsonString: text)
+        case .disconnected(_, _):
+            connected = false
+            isConnected = false
+        case .cancelled:
+            connected = false
+            isConnected = false
+        case .error(_):
+            connected = false
+            isConnected = false
         default:
             break
         }
     }
 
     private func sendPendingSubscriptionsIfConnected() {
-        guard case .connected = socket?.isConnected, let socket else { return }
+        guard let socket = self.socket, connected, !pendingSubscriptions.isEmpty else { return }
         let subscribeMessage: [String: Any] = [
-            "context": "vessels.self",
+            "context": context,
             "subscribe": pendingSubscriptions.map { $0.toDictionary() }
         ]
         if let data = try? JSONSerialization.data(withJSONObject: subscribeMessage, options: []),
            let json = String(data: data, encoding: .utf8) {
             socket.write(string: json)
+            // Clear once sent to avoid duplicate re-sends on reconnect unless re-queued
+            pendingSubscriptions.removeAll()
         }
     }
 
@@ -90,46 +116,39 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         guard let data = jsonString.data(using: .utf8),
               let delta = try? JSONDecoder().decode(SignalKDelta.self, from: data) else { return }
 
+        let ctx = delta.context
         for update in delta.updates {
-            for value in update.values {
-                switch value.path {
-                case "navigation.courseOverGroundTrue":
-                    updatePublished(\.courseOverGround, with: value.value.doubleValue())
-                case "navigation.speedOverGround":
-                    updatePublished(\.speedOverGround, with: value.value.doubleValue())
-                case "environment.water.temperature":
-                    updatePublished(\.waterTemperature, with: value.value.doubleValue())
-                case let path where path.hasPrefix("tanks."):
-                    if let tankLevel = value.value.doubleValue() {
-                        DispatchQueue.main.async {
-                            self.tankLevels[path] = tankLevel
-                        }
+            for v in update.values {
+                // Effective path: prefer value.path; else use update.path
+                guard let rawPath = v.path ?? update.path else { continue }
+                // Derive absolute and relative keys
+                let absolutePath: String
+                if let ctx = ctx, !rawPath.hasPrefix(ctx + ".") {
+                    // If rawPath is relative, make absolute via context
+                    absolutePath = ctx + "." + rawPath
+                } else {
+                    absolutePath = rawPath
+                }
+                let relativePath: String
+                if let ctx = ctx, absolutePath.hasPrefix(ctx + ".") {
+                    relativePath = String(absolutePath.dropFirst(ctx.count + 1))
+                } else if absolutePath.hasPrefix("vessels.") {
+                    // Fallback: strip any vessels.<id>. prefix
+                    if let firstDot = absolutePath.dropFirst("vessels.".count).firstIndex(of: ".") {
+                        relativePath = String(absolutePath[absolutePath.index(after: firstDot)...])
+                    } else {
+                        relativePath = absolutePath
                     }
-                case "navigation.position":
-                    if case .dict(let coords) = value.value {
-                        DispatchQueue.main.async {
-                            self.latitude = coords["latitude"]
-                            self.longitude = coords["longitude"]
-                        }
-                    }
-                case "navigation.position.latitude":
-                    updatePublished(\.latitude, with: value.value.doubleValue())
-                case "navigation.position.longitude":
-                    updatePublished(\.longitude, with: value.value.doubleValue())
-                default:
-                    // Store generic values for paths apps explicitly subscribe to
-                    DispatchQueue.main.async {
-                        self.pathValues[value.path] = value.value
-                    }
+                } else {
+                    relativePath = absolutePath
+                }
+                DispatchQueue.main.async {
+                    // Store both absolute and relative paths for flexible lookup
+                    self.pathValues[absolutePath] = v.value
+                    self.pathValues[relativePath] = v.value
                 }
             }
         }
     }
 
-    private func updatePublished(_ keyPath: ReferenceWritableKeyPath<SignalKClient, Double?>, with newValue: Double?) {
-        guard let newValue = newValue else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?[keyPath: keyPath] = newValue
-        }
-    }
 }
