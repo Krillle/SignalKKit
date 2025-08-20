@@ -57,7 +57,7 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         if subscribeAllOnConnect {
             urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream?subscribe=all"
         } else {
-            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream"
+            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream?subscribe=none"
         }
         let url = URL(string: urlString)!
     var request = URLRequest(url: url)
