@@ -22,6 +22,12 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     public var authToken: String?
     // Optional TLS override; when nil we auto-detect by port
     public var useTLS: Bool?
+    
+    // API client for HTTP requests
+    public lazy var apiClient: SignalKAPIClient = {
+        let client = SignalKAPIClient()
+        return client
+    }()
 
     // Queue of subscriptions requested before or after connect
     private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
@@ -68,6 +74,14 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         }
         socket = WebSocket(request: request)
         socket?.delegate = self
+        
+        // Configure API client with the same base URL
+        let scheme = request.url?.scheme ?? "http"
+        let apiScheme = scheme == "wss" ? "https" : "http"
+        if let apiURL = URL(string: "\(apiScheme)://\(host):\(port)") {
+            apiClient.setBaseURL(apiURL)
+        }
+        
         socket?.connect()
     }
 

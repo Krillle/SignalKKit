@@ -143,6 +143,59 @@ Signal K deltas may include the data path at the update level or the value level
 - `vessels.self.navigation.speedOverGround`
 - `navigation.speedOverGround`
 
+
+## HTTP API and Access Token Usage
+
+SignalKKit provides a built-in HTTP API client for GET and PUT requests to the Signal K REST API, with fully automatic access token management. The app does not need to handle tokens directly.
+
+### Basic Usage
+
+- The API client is available as `client.apiClient` from any `SignalKClient` instance.
+- The API client automatically uses the correct base URL and manages tokens for you.
+
+#### GET Example
+
+```swift
+let data = try await client.apiClient.get(path: "signalk/v1/api/vessels/self")
+```
+
+#### PUT Example (auto token request)
+
+```swift
+let jsonData = """{"value": 1.234}""".data(using: .utf8)!
+try await client.apiClient.put(path: "signalk/v1/api/vessels/self/navigation/courseOverGroundTrue", data: jsonData)
+```
+
+#### On-demand token request
+
+```swift
+try await client.apiClient.requestAccessToken(description: "My Marine App")
+```
+
+#### Observe token status
+
+```swift
+client.apiClient.$hasValidToken.sink { hasToken in
+	print("Token available: \(hasToken)")
+}
+```
+
+### How it works
+
+- The API client uses a persistent UUID as clientId (shared across devices via iCloud/NSUbiquitousKeyValueStore).
+- The first PUT (or on-demand) triggers a token request if needed.
+- If the server requires approval, the client polls the request status and stores the token when approved.
+- If access is denied, the client will not retry until the device is reset or the user takes action.
+- Tokens are used for both GET and PUT if available.
+- Expired tokens are automatically refreshed as needed.
+
+### Notes
+
+- Most servers allow GET without a token, but PUT always requires one.
+- The app never needs to manage tokens, request IDs, or handle approval flows—everything is automatic.
+
+---
+
 ## Troubleshooting
 
 - Seeing zeros? Confirm your server actually publishes the paths you display. Some servers use `navigation.courseOverGround` instead of `navigation.courseOverGroundTrue`, or alternative environment paths.

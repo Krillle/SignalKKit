@@ -77,3 +77,31 @@ public struct SignalKSubscriptionRequest: Codable, Equatable {
         return dict
     }
 }
+
+// MARK: - Signal K API Models
+
+public struct SignalKAccessRequest: Codable {
+    public let clientId: String
+    public let description: String
+}
+
+public struct SignalKAccessResponse: Codable {
+    public let state: String
+    public let href: String?
+    public let requestId: String?
+    public let statusCode: Int?
+    public let message: String?
+}
+
+public struct SignalKAccessStatus: Codable {
+    public let state: String
+    public let statusCode: Int?
+    public let accessRequest: SignalKAccessRequestResult?
+    public let message: String?
+}
+
+public struct SignalKAccessRequestResult: Codable {
+    public let permission: String
+    public let token: String?
+    public let expirationTime: String?
+}
