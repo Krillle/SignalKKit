@@ -53,20 +53,20 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
 
     public func connect(to host: String, port: Int) {
         // Optionally request server-side subscription to all updates
-        let scheme: String
+        let urlScheme: String
         if let useTLS = useTLS {
-            scheme = useTLS ? "wss" : "ws"
+            urlScheme = useTLS ? "wss" : "ws"
         } else {
-            scheme = (port == 443 || port == 3443) ? "wss" : "ws"
+            urlScheme = (port == 443 || port == 3443) ? "wss" : "ws"
         }
         let urlString: String
         if subscribeAllOnConnect {
-            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream?subscribe=all"
+            urlString = "\(urlScheme)://\(host):\(port)/signalk/v1/stream?subscribe=all"
         } else {
-            urlString = "\(scheme)://\(host):\(port)/signalk/v1/stream?subscribe=none"
+            urlString = "\(urlScheme)://\(host):\(port)/signalk/v1/stream?subscribe=none"
         }
         let url = URL(string: urlString)!
-    var request = URLRequest(url: url)
+        var request = URLRequest(url: url)
     // Some Signal K servers expect subprotocol negotiation
     request.setValue("signalk, ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
         if let token = authToken, !token.isEmpty {
