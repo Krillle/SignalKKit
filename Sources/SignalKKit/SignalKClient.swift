@@ -10,6 +10,11 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var connected = false
     @Published public private(set) var isConnected: Bool = false
+    
+    // Connection state information
+    @Published public private(set) var connectedHost: String? = nil
+    @Published public private(set) var connectedPort: Int? = nil
+    @Published public private(set) var connectionURL: String? = nil
 
     public init() {}
 
@@ -26,8 +31,19 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // API client for HTTP requests
     public lazy var apiClient: SignalKAPIClient = {
         let client = SignalKAPIClient()
+        // Forward API client state changes to our published properties
+        client.$hasValidToken
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$hasValidToken)
+        client.$isTokenRequestPending
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isTokenRequestPending)
         return client
     }()
+    
+    // Expose API client state for easy app access
+    @Published public private(set) var hasValidToken: Bool = false
+    @Published public private(set) var isTokenRequestPending: Bool = false
 
     // Queue of subscriptions requested before or after connect
     private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
@@ -52,6 +68,10 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     }
 
     public func connect(to host: String, port: Int) {
+        // Store connection info
+        connectedHost = host
+        connectedPort = port
+        
         // Optionally request server-side subscription to all updates
         let urlScheme: String
         if let useTLS = useTLS {
@@ -65,6 +85,10 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         } else {
             urlString = "\(urlScheme)://\(host):\(port)/signalk/v1/stream?subscribe=none"
         }
+        
+        // Store connection URL
+        connectionURL = urlString
+        
         let url = URL(string: urlString)!
         var request = URLRequest(url: url)
     // Some Signal K servers expect subprotocol negotiation
@@ -87,6 +111,9 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
 
     public func disconnect() {
         socket?.disconnect()
+        connectedHost = nil
+        connectedPort = nil
+        connectionURL = nil
     }
 
     public func didReceive(event: WebSocketEvent, client: WebSocketClient) {
@@ -101,12 +128,21 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         case .disconnected(_, _):
             connected = false
             isConnected = false
+            connectedHost = nil
+            connectedPort = nil
+            connectionURL = nil
         case .cancelled:
             connected = false
             isConnected = false
+            connectedHost = nil
+            connectedPort = nil
+            connectionURL = nil
         case .error(_):
             connected = false
             isConnected = false
+            connectedHost = nil
+            connectedPort = nil
+            connectionURL = nil
         default:
             break
         }

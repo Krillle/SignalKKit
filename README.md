@@ -128,6 +128,11 @@ struct ContentView: View {
 	- `authToken: String?` — optional bearer token for secured servers
 	- `useTLS: Bool?` — set to force `wss`/`ws` (auto-detects by port when nil)
 	- `@Published private(set) var isConnected: Bool` — observe connection state
+	- `@Published private(set) var connectedHost: String?` — currently connected host
+	- `@Published private(set) var connectedPort: Int?` — currently connected port
+	- `@Published private(set) var connectionURL: String?` — full WebSocket URL
+	- `@Published private(set) var hasValidToken: Bool` — whether API has valid access token
+	- `@Published private(set) var isTokenRequestPending: Bool` — whether token request needs approval
 	- `apiClient: SignalKAPIClient` — HTTP API client with automatic token management
 
 - `SignalKAPIClient`
