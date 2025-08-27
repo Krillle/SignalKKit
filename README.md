@@ -1,6 +1,6 @@
 # SignalKKit
 
-SignalKKit is a lightweight Swift Package to discover Signal K servers on the local network and consume their real‑time data stream over WebSockets.
+SignalKKit is a lightweight Swift Package to discover Signal K servers on the local network and consume their real‑time data stream over WebSockets. It also provides a complete HTTP API client with automatic access token management for GET/PUT requests to the Signal K REST API.
 
 It is intentionally generic: your app chooses which Signal K paths to subscribe to and reads values from a flexible dictionary, without the package imposing any fixed model.
 
@@ -8,6 +8,7 @@ It is intentionally generic: your app chooses which Signal K paths to subscribe 
 
 - mDNS/Bonjour discovery for common Signal K service types
 - WebSocket client for the Signal K delta stream
+- HTTP API client with automatic access token management
 - Flexible subscriptions via path strings (no hardcoded paths)
 - Generic value store keyed by Signal K paths
 - Handles update-level and value-level paths and normalizes with context
@@ -127,6 +128,14 @@ struct ContentView: View {
 	- `authToken: String?` — optional bearer token for secured servers
 	- `useTLS: Bool?` — set to force `wss`/`ws` (auto-detects by port when nil)
 	- `@Published private(set) var isConnected: Bool` — observe connection state
+	- `apiClient: SignalKAPIClient` — HTTP API client with automatic token management
+
+- `SignalKAPIClient`
+	- `get(path: String) async throws -> Data` — GET requests with automatic token handling
+	- `put(path: String, data: Data) async throws` — PUT requests with automatic token management
+	- `requestAccessToken(description: String?) async throws` — manual token request
+	- `@Published private(set) var hasValidToken: Bool` — observe token availability
+	- `@Published private(set) var isTokenRequestPending: Bool` — observe token request status
 
 - `SignalKSubscriptionRequest`
 	- `path: String`
@@ -182,17 +191,19 @@ client.apiClient.$hasValidToken.sink { hasToken in
 
 ### How it works
 
-- The API client uses a persistent UUID as clientId (shared across devices via iCloud/NSUbiquitousKeyValueStore).
-- The first PUT (or on-demand) triggers a token request if needed.
-- If the server requires approval, the client polls the request status and stores the token when approved.
-- If access is denied, the client will not retry until the device is reset or the user takes action.
-- Tokens are used for both GET and PUT if available.
-- Expired tokens are automatically refreshed as needed.
+- The API client uses a persistent UUID as clientId (shared across devices via iCloud/NSUbiquitousKeyValueStore with UserDefaults fallback).
+- PUT requests automatically trigger token requests if needed.
+- GET requests automatically retry with token acquisition on 401 responses.
+- If the server requires approval, the client checks the request status on subsequent API calls and stores the token when approved.
+- If access is denied, the client will not retry until the denied state is cleared.
+- Tokens are automatically used for both GET and PUT requests when available.
+- Revoked/expired tokens are automatically detected and refreshed as needed.
 
 ### Notes
 
 - Most servers allow GET without a token, but PUT always requires one.
-- The app never needs to manage tokens, request IDs, or handle approval flows—everything is automatic.
+- The app never needs to manage tokens, request IDs, or approval flows—everything is automatic.
+- Token storage works without iCloud entitlements by falling back to local UserDefaults.
 
 ---
 
