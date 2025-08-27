@@ -213,7 +213,7 @@ public class SignalKAPIClient: ObservableObject {
         #if DEBUG
         print("[SignalKAPIClient] PUT sending to \(url)")
         #endif
-        let (_, response) = try await session.data(for: request)
+        let (responseData, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             #if DEBUG
             print("[SignalKAPIClient] PUT invalid response")
@@ -226,6 +226,11 @@ public class SignalKAPIClient: ObservableObject {
         guard (200...299).contains(httpResponse.statusCode) else {
             #if DEBUG
             print("[SignalKAPIClient] PUT error: \(httpResponse.statusCode)")
+            
+            // Try to extract error message from response body
+            if let errorMessage = extractErrorMessage(from: responseData) {
+                print("[SignalKAPIClient] PUT error message: \(errorMessage)")
+            }
             #endif
             
             // If we get 401 with a token, the token was revoked on server - clear it and request new one
@@ -491,6 +496,18 @@ public class SignalKAPIClient: ObservableObject {
             #endif
             // Handle error silently
         }
+    }
+    
+    private func extractErrorMessage(from data: Data) -> String? {
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return json["message"] as? String
+            }
+        } catch {
+            // If JSON parsing fails, try to return raw string
+            return String(data: data, encoding: .utf8)
+        }
+        return nil
     }
 }
 
