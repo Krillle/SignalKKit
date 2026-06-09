@@ -88,23 +88,22 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         
         // Store connection URL
         connectionURL = urlString
+
+        let apiScheme = urlScheme == "wss" ? "https" : "http"
+        if let apiURL = URL(string: "\(apiScheme)://\(host):\(port)") {
+            apiClient.setBaseURL(apiURL)
+        }
         
         let url = URL(string: urlString)!
         var request = URLRequest(url: url)
     // Some Signal K servers expect subprotocol negotiation
     request.setValue("signalk, ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
-        if let token = authToken, !token.isEmpty {
+        let token = authToken ?? apiClient.currentAccessToken
+        if let token = token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         socket = WebSocket(request: request)
         socket?.delegate = self
-        
-        // Configure API client with the same base URL
-        let scheme = request.url?.scheme ?? "http"
-        let apiScheme = scheme == "wss" ? "https" : "http"
-        if let apiURL = URL(string: "\(apiScheme)://\(host):\(port)") {
-            apiClient.setBaseURL(apiURL)
-        }
         
         socket?.connect()
     }

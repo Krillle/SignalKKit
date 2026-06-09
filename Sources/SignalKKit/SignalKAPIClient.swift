@@ -13,10 +13,50 @@ public class SignalKAPIClient: ObservableObject {
     
     // Storage keys
     private let clientIdKey = "SignalKKit.clientId"
-    private let tokenKey = "SignalKKit.accessToken"
-    private let pendingHrefKey = "SignalKKit.pendingHref"
-    private let tokenExpirationKey = "SignalKKit.tokenExpiration"
-    private let deniedStateKey = "SignalKKit.deniedState"
+    private var tokenKey: String? { serverScopedKey(for: "accessToken") }
+    private var pendingHrefKey: String? { serverScopedKey(for: "pendingHref") }
+    private var tokenExpirationKey: String? { serverScopedKey(for: "tokenExpiration") }
+    private var deniedStateKey: String? { serverScopedKey(for: "deniedState") }
+
+    internal static func normalizedServerIdentifier(for url: URL) -> String? {
+        guard let host = url.host?.lowercased(), !host.isEmpty else {
+            return nil
+        }
+
+        let port = url.port ?? defaultPort(for: url.scheme)
+        guard let port else {
+            return nil
+        }
+
+        return "\(host):\(port)"
+    }
+
+    internal static func serverScopedStorageKey(for suffix: String, baseURL: URL) -> String? {
+        guard let serverIdentifier = normalizedServerIdentifier(for: baseURL) else {
+            return nil
+        }
+
+        return "SignalKKit.\(serverIdentifier).\(suffix)"
+    }
+
+    private static func defaultPort(for scheme: String?) -> Int? {
+        switch scheme?.lowercased() {
+        case "http", "ws":
+            return 80
+        case "https", "wss":
+            return 443
+        default:
+            return nil
+        }
+    }
+
+    private func serverScopedKey(for suffix: String) -> String? {
+        guard let baseURL = baseURL else {
+            return nil
+        }
+
+        return Self.serverScopedStorageKey(for: suffix, baseURL: baseURL)
+    }
     
     // Storage helper that falls back to UserDefaults if iCloud is not available
     private func getValue(forKey key: String) -> String? {
@@ -79,12 +119,17 @@ public class SignalKAPIClient: ObservableObject {
     
     /// Set the base URL for the Signal K server (scheme://host:port)
     public func setBaseURL(_ url: URL) {
-    self.baseURL = url
-#if DEBUG
-    print("[SignalKAPIClient] setBaseURL: \(url)")
-#endif
-    // Check token status when connecting to a server
-    Task { await checkTokenStatus() }
+        self.baseURL = url
+        #if DEBUG
+        print("[SignalKAPIClient] setBaseURL: \(url)")
+        #endif
+        // Check token status when connecting to a server
+        Task { await checkTokenStatus() }
+    }
+
+    /// The stored access token for the currently configured server, if available and not expired.
+    public var currentAccessToken: String? {
+        currentToken
     }
     
     /// Request access token on demand
@@ -103,7 +148,7 @@ public class SignalKAPIClient: ObservableObject {
     
     /// Perform GET request to Signal K API
     public func get(path: String) async throws -> Data {
-        guard let baseURL = baseURL else {
+        guard baseURL != nil else {
             #if DEBUG
             print("[SignalKAPIClient] GET failed: no baseURL")
             #endif
@@ -152,8 +197,7 @@ public class SignalKAPIClient: ObservableObject {
                 #if DEBUG
                 print("[SignalKAPIClient] GET: clearing invalid token")
                 #endif
-                removeValue(forKey: tokenKey)
-                removeValue(forKey: tokenExpirationKey)
+                clearStoredToken()
                 clearDeniedState()
                 await MainActor.run {
                     hasValidToken = false
@@ -238,8 +282,7 @@ public class SignalKAPIClient: ObservableObject {
                 #if DEBUG
                 print("[SignalKAPIClient] PUT: 401 with token, clearing token and requesting new one")
                 #endif
-                removeValue(forKey: tokenKey)
-                removeValue(forKey: tokenExpirationKey)
+                clearStoredToken()
                 clearDeniedState() // Allow new token requests
                 await MainActor.run {
                     hasValidToken = false
@@ -264,16 +307,23 @@ public class SignalKAPIClient: ObservableObject {
     }
 
     private var currentToken: String? {
+        guard let tokenKey = tokenKey else {
+            return nil
+        }
+
         guard !isTokenExpired else {
             // Clear expired token
-            removeValue(forKey: tokenKey)
-            removeValue(forKey: tokenExpirationKey)
+            clearStoredToken()
             return nil
         }
         return getValue(forKey: tokenKey)
     }
 
     private var isTokenExpired: Bool {
+        guard let tokenExpirationKey = tokenExpirationKey else {
+            return false
+        }
+
         guard let expirationString = getValue(forKey: tokenExpirationKey) else {
             return false // No expiration means token doesn't expire
         }
@@ -287,19 +337,55 @@ public class SignalKAPIClient: ObservableObject {
     }
 
     private var pendingHref: String? {
+        guard let pendingHrefKey = pendingHrefKey else {
+            return nil
+        }
+
         return getValue(forKey: pendingHrefKey)
     }
 
     private var isDenied: Bool {
+        guard let deniedStateKey = deniedStateKey else {
+            return false
+        }
+
         return getBoolValue(forKey: deniedStateKey)
     }
 
     private func clearDeniedState() {
+        guard let deniedStateKey = deniedStateKey else {
+            return
+        }
+
         removeValue(forKey: deniedStateKey)
     }
 
     private func setDeniedState() {
+        guard let deniedStateKey = deniedStateKey else {
+            return
+        }
+
         setBoolValue(true, forKey: deniedStateKey)
+    }
+
+    private func clearStoredToken() {
+        if let tokenKey = tokenKey {
+            removeValue(forKey: tokenKey)
+        }
+        if let tokenExpirationKey = tokenExpirationKey {
+            removeValue(forKey: tokenExpirationKey)
+        }
+    }
+
+    private func storeAccessToken(_ token: String, expirationTime: String?) {
+        guard let tokenKey = tokenKey else {
+            return
+        }
+
+        setValue(token, forKey: tokenKey)
+        if let tokenExpirationKey = tokenExpirationKey {
+            setValue(expirationTime, forKey: tokenExpirationKey)
+        }
     }
 
     private var appDisplayName: String {
@@ -413,7 +499,7 @@ public class SignalKAPIClient: ObservableObject {
             let accessResponse = try JSONDecoder().decode(SignalKAccessResponse.self, from: data)
             if httpResponse.statusCode == 202 || httpResponse.statusCode == 400 {
                 // Store href for status checking
-                if let href = accessResponse.href {
+                if let href = accessResponse.href, let pendingHrefKey = pendingHrefKey {
                     setValue(href, forKey: pendingHrefKey)
                     #if DEBUG
                     print("[SignalKAPIClient] requestNewAccessToken: received href=\(href)")
@@ -459,7 +545,9 @@ public class SignalKAPIClient: ObservableObject {
             #endif
             if status.state == "COMPLETED" {
                 // Clear pending request
-                removeValue(forKey: pendingHrefKey)
+                if let pendingHrefKey = pendingHrefKey {
+                    removeValue(forKey: pendingHrefKey)
+                }
                 #if DEBUG
                 print("[SignalKAPIClient] checkPendingRequest: request completed, cleared href")
                 #endif
@@ -467,11 +555,7 @@ public class SignalKAPIClient: ObservableObject {
                     if accessRequest.permission == "APPROVED" {
                         // Store token
                         if let token = accessRequest.token {
-                            setValue(token, forKey: tokenKey)
-                            // Store expiration if provided
-                            if let expirationTime = accessRequest.expirationTime {
-                                setValue(expirationTime, forKey: tokenExpirationKey)
-                            }
+                            storeAccessToken(token, expirationTime: accessRequest.expirationTime)
                             clearDeniedState()
                             await MainActor.run {
                                 hasValidToken = true
