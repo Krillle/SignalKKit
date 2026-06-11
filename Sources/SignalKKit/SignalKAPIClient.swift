@@ -238,8 +238,11 @@ public class SignalKAPIClient: ObservableObject {
         await ensureTokenAvailable()
         guard let token = currentToken else {
             #if DEBUG
-            print("[SignalKAPIClient] PUT: no access token available after ensureTokenAvailable")
+            print("[SignalKAPIClient] PUT: no access token available after ensureTokenAvailable, pendingHref=\(String(describing: pendingHref))")
             #endif
+            if pendingHref != nil {
+                throw SignalKError.accessRequestPending
+            }
             throw SignalKError.noAccessToken
         }
         guard let baseURL = baseURL else {
@@ -431,6 +434,12 @@ public class SignalKAPIClient: ObservableObject {
                 #endif
                 return
             }
+            if pendingHref != nil {
+                #if DEBUG
+                print("[SignalKAPIClient] ensureTokenAvailable: access request still pending, not creating a new request")
+                #endif
+                return
+            }
         }
         // Request new token
         #if DEBUG
@@ -571,6 +580,10 @@ public class SignalKAPIClient: ObservableObject {
                         print("[SignalKAPIClient] checkPendingRequest: token denied")
                         #endif
                     }
+                } else {
+                    #if DEBUG
+                    print("[SignalKAPIClient] checkPendingRequest: completed without accessRequest, statusCode=\(String(describing: status.statusCode)), message=\(status.message ?? "nil")")
+                    #endif
                 }
             }
             // If still PENDING, leave href in place for next check
@@ -600,6 +613,7 @@ public class SignalKAPIClient: ObservableObject {
 public enum SignalKError: Error, LocalizedError {
     case noServerURL
     case noAccessToken
+    case accessRequestPending
     case accessDenied
     case invalidResponse
     case httpError(Int)
@@ -610,6 +624,8 @@ public enum SignalKError: Error, LocalizedError {
             return "No Signal K server URL configured"
         case .noAccessToken:
             return "No access token available"
+        case .accessRequestPending:
+            return "Access request is pending approval on the Signal K server"
         case .accessDenied:
             return "Access was denied by the server"
         case .invalidResponse:
