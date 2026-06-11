@@ -47,6 +47,7 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
 
     // Queue of subscriptions requested before or after connect
     private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
+    private var pendingRequests: [String: CheckedContinuation<SignalKRequestResponse, Error>] = [:]
 
     // Request the server to subscribe to custom Signal K paths
     public func subscribe(paths: [SignalKSubscriptionRequest]) {
@@ -64,6 +65,57 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         if let data = try? JSONSerialization.data(withJSONObject: message, options: []),
            let json = String(data: data, encoding: .utf8) {
             socket.write(string: json)
+        }
+    }
+
+    /// Send a Signal K PUT request over the active WebSocket stream.
+    public func put(path: String, value: Any, units: String? = nil, source: String? = nil, timeout: TimeInterval = 8.0) async throws {
+        guard let socket = self.socket, connected else {
+            throw SignalKWebSocketRequestError.notConnected
+        }
+
+        let requestId = UUID().uuidString
+        var put: [String: Any] = [
+            "path": path,
+            "value": value
+        ]
+        if let source {
+            put["source"] = source
+        }
+        if let units {
+            put["units"] = units
+        }
+
+        var message: [String: Any] = [
+            "requestId": requestId,
+            "put": put
+        ]
+        if let token = authToken ?? apiClient.currentAccessToken, !token.isEmpty {
+            message["token"] = token
+        }
+
+        guard JSONSerialization.isValidJSONObject(message),
+              let data = try? JSONSerialization.data(withJSONObject: message, options: []),
+              let json = String(data: data, encoding: .utf8) else {
+            throw SignalKWebSocketRequestError.encodingFailed
+        }
+
+        let response = try await withCheckedThrowingContinuation { continuation in
+            pendingRequests[requestId] = continuation
+            socket.write(string: json)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                guard let continuation = self?.pendingRequests.removeValue(forKey: requestId) else { return }
+                continuation.resume(throwing: SignalKWebSocketRequestError.timedOut)
+            }
+        }
+
+        guard response.isSuccessful else {
+            throw SignalKWebSocketRequestError.failed(
+                statusCode: response.statusCode,
+                state: response.state,
+                message: response.message
+            )
         }
     }
 
@@ -123,25 +175,30 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
             isConnected = true
             sendPendingSubscriptionsIfConnected()
         case .text(let text):
-            parseDelta(jsonString: text)
+            if !handleRequestResponse(jsonString: text) {
+                parseDelta(jsonString: text)
+            }
         case .disconnected(_, _):
             connected = false
             isConnected = false
             connectedHost = nil
             connectedPort = nil
             connectionURL = nil
+            failPendingRequests(with: SignalKWebSocketRequestError.notConnected)
         case .cancelled:
             connected = false
             isConnected = false
             connectedHost = nil
             connectedPort = nil
             connectionURL = nil
+            failPendingRequests(with: SignalKWebSocketRequestError.notConnected)
         case .error(_):
             connected = false
             isConnected = false
             connectedHost = nil
             connectedPort = nil
             connectionURL = nil
+            failPendingRequests(with: SignalKWebSocketRequestError.notConnected)
         default:
             break
         }
@@ -198,6 +255,38 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
                 }
             }
         }
+    }
+
+    private func handleRequestResponse(jsonString: String) -> Bool {
+        guard let data = jsonString.data(using: .utf8),
+              let response = try? JSONDecoder().decode(SignalKRequestResponse.self, from: data),
+              pendingRequests[response.requestId] != nil else {
+            return false
+        }
+
+        guard !response.isAcceptedPending else {
+            guard let continuation = pendingRequests.removeValue(forKey: response.requestId) else {
+                return true
+            }
+            continuation.resume(returning: response)
+            return true
+        }
+
+        guard response.state != "PENDING" else {
+            return true
+        }
+
+        guard let continuation = pendingRequests.removeValue(forKey: response.requestId) else {
+            return true
+        }
+        continuation.resume(returning: response)
+        return true
+    }
+
+    private func failPendingRequests(with error: Error) {
+        let requests = pendingRequests
+        pendingRequests.removeAll()
+        requests.values.forEach { $0.resume(throwing: error) }
     }
 
 }

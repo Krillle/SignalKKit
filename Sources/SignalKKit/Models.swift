@@ -13,6 +13,68 @@ public struct SignalKDelta: Codable {
     public let updates: [Update]
 }
 
+public struct SignalKRequestResponse: Decodable {
+    public let requestId: String
+    public let state: String
+    public let statusCode: Int?
+    public let message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId
+        case state
+        case statusCode
+        case result
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requestId = try container.decode(String.self, forKey: .requestId)
+        state = try container.decode(String.self, forKey: .state)
+        statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode)
+        ?? container.decodeIfPresent(Int.self, forKey: .result)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+    }
+
+    var isAcceptedPending: Bool {
+        #if DEBUG
+        state == "PENDING" && statusCode == 202
+        #else
+        false
+        #endif
+    }
+
+    var isSuccessful: Bool {
+        guard let statusCode, (200...299).contains(statusCode) else { return false }
+        return state == "COMPLETED" || isAcceptedPending
+    }
+}
+
+public enum SignalKWebSocketRequestError: Error, LocalizedError {
+    case notConnected
+    case encodingFailed
+    case timedOut
+    case failed(statusCode: Int?, state: String?, message: String?)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            return "Signal K WebSocket is not connected."
+        case .encodingFailed:
+            return "Signal K WebSocket request could not be encoded."
+        case .timedOut:
+            return "Signal K WebSocket request timed out."
+        case .failed(let statusCode, let state, let message):
+            let status = statusCode.map(String.init) ?? "unknown"
+            let stateText = state ?? "unknown"
+            if let message {
+                return "Signal K WebSocket request failed with status \(status), state \(stateText): \(message)"
+            }
+            return "Signal K WebSocket request failed with status \(status), state \(stateText)."
+        }
+    }
+}
+
 public enum CodableValue: Codable {
     case null
     case bool(Bool)
