@@ -7,6 +7,7 @@ public struct SignalKDelta: Codable {
             public let value: CodableValue
         }
         public let path: String? // Optional update-level path
+        public let timestamp: String?
         public let values: [Value]
     }
     public let context: String?

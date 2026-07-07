@@ -5,6 +5,7 @@ import Starscream
 public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // Generic store for arbitrary subscribed path -> value
     @Published public var pathValues: [String: CodableValue] = [:]
+    @Published public var pathTimestamps: [String: Date] = [:]
 
     private var socket: WebSocket?
     private var cancellables = Set<AnyCancellable>()
@@ -248,13 +249,23 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
                 } else {
                     relativePath = absolutePath
                 }
+                let timestamp = Self.parseISO8601Date(update.timestamp) ?? Date()
                 DispatchQueue.main.async {
-                    // Store both absolute and relative paths for flexible lookup
+                    // Store timestamps before values so pathValues observers can reject stale data immediately.
+                    self.pathTimestamps[absolutePath] = timestamp
+                    self.pathTimestamps[relativePath] = timestamp
                     self.pathValues[absolutePath] = v.value
                     self.pathValues[relativePath] = v.value
                 }
             }
         }
+    }
+    
+    private static func parseISO8601Date(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalFormatter.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 
     private func handleRequestResponse(jsonString: String) -> Bool {
