@@ -132,25 +132,26 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         } else {
             urlScheme = (port == 443 || port == 3443) ? "wss" : "ws"
         }
-        let urlString: String
-        if subscribeAllOnConnect {
-            urlString = "\(urlScheme)://\(host):\(port)/signalk/v1/stream?subscribe=all"
-        } else {
-            urlString = "\(urlScheme)://\(host):\(port)/signalk/v1/stream?subscribe=none"
+
+        let encodedHost = Self.urlEncodedHost(from: host)
+        let subscribeValue = subscribeAllOnConnect ? "all" : "none"
+        let urlString = "\(urlScheme)://\(encodedHost):\(port)/signalk/v1/stream?subscribe=\(subscribeValue)"
+        guard let url = URL(string: urlString) else {
+            connectionURL = nil
+            return
         }
-        
+
         // Store connection URL
-        connectionURL = urlString
+        connectionURL = url.absoluteString
 
         let apiScheme = urlScheme == "wss" ? "https" : "http"
-        if let apiURL = URL(string: "\(apiScheme)://\(host):\(port)") {
+        if let apiURL = URL(string: "\(apiScheme)://\(encodedHost):\(port)") {
             apiClient.setBaseURL(apiURL)
         }
         
-        let url = URL(string: urlString)!
         var request = URLRequest(url: url)
-    // Some Signal K servers expect subprotocol negotiation
-    request.setValue("signalk, ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        // Some Signal K servers expect subprotocol negotiation
+        request.setValue("signalk, ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
         let token = authToken ?? apiClient.currentAccessToken
         if let token = token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -159,6 +160,62 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         socket?.delegate = self
         
         socket?.connect()
+    }
+
+    private static func urlEncodedHost(from host: String) -> String {
+        let decodedHost = canonicalBonjourHost(decodeBonjourEscapes(in: host))
+        return decodedHost.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? host
+    }
+
+    private static func canonicalBonjourHost(_ host: String) -> String {
+        guard host.hasSuffix(".local") else { return host }
+        let localSuffix = ".local"
+        let name = String(host.dropLast(localSuffix.count))
+        guard let suffixStart = name.lastIndex(of: "("),
+              name.hasSuffix(")"),
+              suffixStart > name.startIndex,
+              name[name.index(before: suffixStart)] == " " else {
+            return host
+        }
+
+        let numberStart = name.index(after: suffixStart)
+        let numberEnd = name.index(before: name.endIndex)
+        guard numberStart < numberEnd,
+              name[numberStart..<numberEnd].allSatisfy(\.isNumber) else {
+            return host
+        }
+
+        return "\(name[..<name.index(before: suffixStart)])\(localSuffix)"
+    }
+
+    private static func decodeBonjourEscapes(in host: String) -> String {
+        var decoded = ""
+        var index = host.startIndex
+
+        while index < host.endIndex {
+            let character = host[index]
+            if character == "\\" {
+                let firstDigitIndex = host.index(after: index)
+                let secondDigitIndex = firstDigitIndex < host.endIndex ? host.index(after: firstDigitIndex) : host.endIndex
+                let thirdDigitIndex = secondDigitIndex < host.endIndex ? host.index(after: secondDigitIndex) : host.endIndex
+
+                if thirdDigitIndex < host.endIndex {
+                    let escapeEndIndex = host.index(after: thirdDigitIndex)
+                    let escape = host[firstDigitIndex..<escapeEndIndex]
+                    if escape.allSatisfy(\.isNumber),
+                       let value = UInt8(escape) {
+                        decoded.unicodeScalars.append(UnicodeScalar(value))
+                        index = escapeEndIndex
+                        continue
+                    }
+                }
+            }
+
+            decoded.append(character)
+            index = host.index(after: index)
+        }
+
+        return decoded
     }
 
     public func disconnect() {
