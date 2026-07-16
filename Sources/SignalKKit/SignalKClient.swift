@@ -32,13 +32,19 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // API client for HTTP requests
     public lazy var apiClient: SignalKAPIClient = {
         let client = SignalKAPIClient()
-        // Forward API client state changes to our published properties
+        // Forward API client state changes to our published properties.
         client.$hasValidToken
             .receive(on: DispatchQueue.main)
-            .assign(to: &$hasValidToken)
+            .sink { [weak self] value in
+                self?.hasValidToken = value
+            }
+            .store(in: &cancellables)
         client.$isTokenRequestPending
             .receive(on: DispatchQueue.main)
-            .assign(to: &$isTokenRequestPending)
+            .sink { [weak self] value in
+                self?.isTokenRequestPending = value
+            }
+            .store(in: &cancellables)
         return client
     }()
     
