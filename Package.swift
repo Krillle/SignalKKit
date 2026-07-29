@@ -22,6 +22,9 @@ let package = Package(
             dependencies: ["Starscream"]),
         .testTarget(
             name: "SignalKKitTests",
-            dependencies: ["SignalKKit"]),
+            dependencies: [
+                "SignalKKit",
+                .product(name: "Starscream", package: "Starscream")
+            ]),
     ]
 )

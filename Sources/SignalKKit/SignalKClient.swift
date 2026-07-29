@@ -55,6 +55,12 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // Queue of subscriptions requested before or after connect
     private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
     private var pendingRequests: [String: CheckedContinuation<SignalKRequestResponse, Error>] = [:]
+    private static let fractionalISO8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let plainISO8601Formatter = ISO8601DateFormatter()
 
     // Request the server to subscribe to custom Signal K paths
     public func subscribe(paths: [SignalKSubscriptionRequest]) {
@@ -287,7 +293,10 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
               let delta = try? JSONDecoder().decode(SignalKDelta.self, from: data) else { return }
 
         let ctx = delta.context
+        var timestampUpdates: [String: Date] = [:]
+        var valueUpdates: [String: CodableValue] = [:]
         for update in delta.updates {
+            let timestamp = Self.parseISO8601Date(update.timestamp) ?? Date()
             for v in update.values {
                 // Effective path: prefer value.path; else use update.path
                 guard let rawPath = v.path ?? update.path else { continue }
@@ -312,23 +321,25 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
                 } else {
                     relativePath = absolutePath
                 }
-                let timestamp = Self.parseISO8601Date(update.timestamp) ?? Date()
-                DispatchQueue.main.async {
-                    // Store timestamps before values so pathValues observers can reject stale data immediately.
-                    self.pathTimestamps[absolutePath] = timestamp
-                    self.pathTimestamps[relativePath] = timestamp
-                    self.pathValues[absolutePath] = v.value
-                    self.pathValues[relativePath] = v.value
-                }
+                timestampUpdates[absolutePath] = timestamp
+                timestampUpdates[relativePath] = timestamp
+                valueUpdates[absolutePath] = v.value
+                valueUpdates[relativePath] = v.value
             }
+        }
+
+        guard !valueUpdates.isEmpty else { return }
+        DispatchQueue.main.async {
+            // Publish a complete delta at once. Timestamps still arrive before
+            // values so pathValues observers can reject stale data immediately.
+            self.pathTimestamps.merge(timestampUpdates) { _, new in new }
+            self.pathValues.merge(valueUpdates) { _, new in new }
         }
     }
     
     private static func parseISO8601Date(_ string: String?) -> Date? {
         guard let string else { return nil }
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractionalFormatter.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        return fractionalISO8601Formatter.date(from: string) ?? plainISO8601Formatter.date(from: string)
     }
 
     private func handleRequestResponse(jsonString: String) -> Bool {
