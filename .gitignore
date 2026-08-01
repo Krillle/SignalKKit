@@ -35,6 +35,7 @@ DerivedData/
 
 # Swift Package Manager
 .build/
+/build/
 .swiftpm/xcode/xcuserdata/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
 

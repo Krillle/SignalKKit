@@ -16,6 +16,10 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     @Published public private(set) var connectedHost: String? = nil
     @Published public private(set) var connectedPort: Int? = nil
     @Published public private(set) var connectionURL: String? = nil
+    /// Most recent low-level WebSocket failure reported by Starscream.
+    /// Consumers can surface this in their own diagnostics without coupling
+    /// SignalKKit to a particular logging framework.
+    @Published public private(set) var lastConnectionDiagnostic: String? = nil
 
     public init() {}
 
@@ -133,6 +137,7 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     }
 
     public func connect(to host: String, port: Int) {
+        lastConnectionDiagnostic = nil
         // Store connection info
         connectedHost = host
         connectedPort = port
@@ -248,7 +253,11 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
             if !handleRequestResponse(jsonString: text) {
                 parseDelta(jsonString: text)
             }
-        case .disconnected(_, _):
+        case .disconnected(let reason, let code):
+            lastConnectionDiagnostic = Self.disconnectionDiagnostic(
+                reason: reason,
+                code: code
+            )
             connected = false
             isConnected = false
             connectedHost = nil
@@ -262,7 +271,13 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
             connectedPort = nil
             connectionURL = nil
             failPendingRequests(with: SignalKWebSocketRequestError.notConnected)
-        case .error(_):
+        case .error(let error):
+            lastConnectionDiagnostic = Self.errorDiagnostic(error)
+            if authToken == nil, Self.isUnauthorizedHTTPUpgrade(error) {
+                Task { [weak self] in
+                    await self?.apiClient.recoverAccessAfterUnauthorizedResponse()
+                }
+            }
             connected = false
             isConnected = false
             connectedHost = nil
@@ -272,6 +287,53 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         default:
             break
         }
+    }
+
+    private static func disconnectionDiagnostic(
+        reason: String,
+        code: UInt16
+    ) -> String {
+        let reason = reason.isEmpty ? "none" : reason
+        return "WebSocket disconnected code=\(code) reason=\(reason)"
+    }
+
+    private static func errorDiagnostic(_ error: Error?) -> String {
+        guard let error else {
+            return "WebSocket error domain=unknown code=unknown description=none"
+        }
+        if let upgradeError = error as? HTTPUpgradeError {
+            switch upgradeError {
+            case .notAnUpgrade(let statusCode, let headers):
+                let responseHeaders = [
+                    "connection",
+                    "content-type",
+                    "location",
+                    "sec-websocket-protocol",
+                    "server",
+                    "upgrade"
+                ]
+                .compactMap { name -> String? in
+                    guard let value = headers[name] else { return nil }
+                    return "\(name)=\(value)"
+                }
+                .joined(separator: ",")
+                let headerDescription = responseHeaders.isEmpty ? "none" : responseHeaders
+                return "WebSocket HTTP upgrade rejected status=\(statusCode) headers=\(headerDescription)"
+            case .invalidData:
+                return "WebSocket HTTP upgrade returned invalid data"
+            }
+        }
+        if let webSocketError = error as? WSError {
+            return "WebSocket error type=\(webSocketError.type) code=\(webSocketError.code) description=\(webSocketError.message)"
+        }
+        let nsError = error as NSError
+        return "WebSocket error domain=\(nsError.domain) code=\(nsError.code) description=\(nsError.localizedDescription)"
+    }
+
+    private static func isUnauthorizedHTTPUpgrade(_ error: Error?) -> Bool {
+        guard let upgradeError = error as? HTTPUpgradeError else { return false }
+        guard case .notAnUpgrade(let statusCode, _) = upgradeError else { return false }
+        return statusCode == 401
     }
 
     private func sendPendingSubscriptionsIfConnected() {

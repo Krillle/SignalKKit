@@ -1,5 +1,12 @@
 import Foundation
 
+public enum SignalKAccessAuthorizationState: String {
+    case authorized
+    case denied
+    case pending
+    case missing
+}
+
 public class SignalKAPIClient: ObservableObject {
     
     // MARK: - Published Properties
@@ -75,7 +82,7 @@ public class SignalKAPIClient: ObservableObject {
             ubiquitousStore.set(value, forKey: key)
             UserDefaults.standard.set(value, forKey: key)
             #if DEBUG
-            print("[SignalKAPIClient] setValue: storing \(key) = \(value)")
+            print("[SignalKAPIClient] setValue: storing \(key)")
             #endif
         } else {
             ubiquitousStore.removeObject(forKey: key)
@@ -131,6 +138,26 @@ public class SignalKAPIClient: ObservableObject {
     public var currentAccessToken: String? {
         currentToken
     }
+
+    /// Stable identifier sent with Signal K device access requests.
+    /// This is an identifier, not a credential or access token.
+    public var accessRequestClientIdentifier: String {
+        clientId
+    }
+
+    /// Non-sensitive summary of the access state for the currently configured server.
+    public var accessAuthorizationState: SignalKAccessAuthorizationState {
+        if currentToken != nil {
+            return .authorized
+        }
+        if isDenied {
+            return .denied
+        }
+        if pendingHref != nil {
+            return .pending
+        }
+        return .missing
+    }
     
     /// Request access token on demand
     public func requestAccessToken(description: String? = nil) async throws {
@@ -143,6 +170,15 @@ public class SignalKAPIClient: ObservableObject {
             #endif
             throw SignalKError.accessDenied
         }
+        await ensureTokenAvailable(description: description)
+    }
+
+    /// Recover from an HTTP 401 returned for a connection that used the stored
+    /// server token. The stable client identifier is intentionally preserved so
+    /// the server can present a new access request for the same device.
+    public func recoverAccessAfterUnauthorizedResponse(description: String? = nil) async {
+        _ = await invalidateStoredAccessTokenIfPresent()
+        guard !isDenied else { return }
         await ensureTokenAvailable(description: description)
     }
     
@@ -192,17 +228,7 @@ public class SignalKAPIClient: ObservableObject {
             print("[SignalKAPIClient] GET: 401 response, attempting to get/refresh token")
             #endif
             
-            // Clear any existing invalid token
-            if currentToken != nil {
-                #if DEBUG
-                print("[SignalKAPIClient] GET: clearing invalid token")
-                #endif
-                clearStoredToken()
-                clearDeniedState()
-                await MainActor.run {
-                    hasValidToken = false
-                }
-            }
+            _ = await invalidateStoredAccessTokenIfPresent()
             
             // Try to get a token
             await ensureTokenAvailable()
@@ -281,17 +307,15 @@ public class SignalKAPIClient: ObservableObject {
             #endif
             
             // If we get 401 with a token, the token was revoked on server - clear it and request new one
-            if httpResponse.statusCode == 401 && currentToken != nil {
-                #if DEBUG
-                print("[SignalKAPIClient] PUT: 401 with token, clearing token and requesting new one")
-                #endif
-                clearStoredToken()
-                clearDeniedState() // Allow new token requests
-                await MainActor.run {
-                    hasValidToken = false
+            if httpResponse.statusCode == 401 {
+                let invalidatedToken = await invalidateStoredAccessTokenIfPresent()
+                if invalidatedToken {
+                    #if DEBUG
+                    print("[SignalKAPIClient] PUT: 401 with token, clearing token and requesting new one")
+                    #endif
+                    // Try to get a new token for next time
+                    await ensureTokenAvailable()
                 }
-                // Try to get a new token for next time
-                await ensureTokenAvailable()
             }
             
             throw SignalKError.httpError(httpResponse.statusCode)
@@ -378,6 +402,17 @@ public class SignalKAPIClient: ObservableObject {
         if let tokenExpirationKey = tokenExpirationKey {
             removeValue(forKey: tokenExpirationKey)
         }
+    }
+
+    @discardableResult
+    internal func invalidateStoredAccessTokenIfPresent() async -> Bool {
+        guard currentToken != nil else { return false }
+        clearStoredToken()
+        clearDeniedState()
+        await MainActor.run {
+            hasValidToken = false
+        }
+        return true
     }
 
     private func storeAccessToken(_ token: String, expirationTime: String?) {

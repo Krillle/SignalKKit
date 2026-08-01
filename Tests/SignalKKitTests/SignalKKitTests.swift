@@ -4,6 +4,12 @@ import Starscream
 @testable import SignalKKit
 
 final class SignalKKitTests: XCTestCase {
+    func testAccessAuthorizationStateIsMissingBeforeServerConfiguration() {
+        let client = SignalKAPIClient()
+
+        XCTAssertEqual(client.accessAuthorizationState, .missing)
+    }
+
     func testServerScopedStorageKeyIncludesNormalizedHostAndPort() throws {
         let url = try XCTUnwrap(URL(string: "https://SignalK.local:3443"))
 
@@ -27,6 +33,26 @@ final class SignalKKitTests: XCTestCase {
 
         XCTAssertEqual(SignalKAPIClient.normalizedServerIdentifier(for: httpURL), "signalk.local:80")
         XCTAssertEqual(SignalKAPIClient.normalizedServerIdentifier(for: httpsURL), "signalk.local:443")
+    }
+
+    func testInvalidatingUnauthorizedTokenPreservesClientIdentifier() async throws {
+        let client = SignalKAPIClient()
+        let host = "unauthorized-\(UUID().uuidString.lowercased()).local"
+        let url = try XCTUnwrap(URL(string: "http://\(host):3000"))
+        let tokenKey = try XCTUnwrap(
+            SignalKAPIClient.serverScopedStorageKey(for: "accessToken", baseURL: url)
+        )
+        UserDefaults.standard.set("stale-token", forKey: tokenKey)
+        defer { UserDefaults.standard.removeObject(forKey: tokenKey) }
+
+        client.setBaseURL(url)
+        let clientIdentifier = client.accessRequestClientIdentifier
+        XCTAssertEqual(client.accessAuthorizationState, .authorized)
+
+        let invalidatedToken = await client.invalidateStoredAccessTokenIfPresent()
+        XCTAssertTrue(invalidatedToken)
+        XCTAssertEqual(client.accessAuthorizationState, .missing)
+        XCTAssertEqual(client.accessRequestClientIdentifier, clientIdentifier)
     }
 
     func testDeltaPublishesValuesOnceWithPerUpdateTimestamps() throws {
@@ -98,6 +124,49 @@ final class SignalKKitTests: XCTestCase {
         XCTAssertEqual(client.pathTimestamps["navigation.headingTrue"], fractionalDate)
         XCTAssertEqual(client.pathTimestamps["navigation.speedOverGround"], fractionalDate)
         XCTAssertEqual(client.pathTimestamps["environment.water.temperature"], plainDate)
+    }
+
+    func testConnectionDiagnosticsPreserveStarscreamFailureDetails() throws {
+        let client = SignalKClient()
+        let socket = WebSocketClientStub()
+
+        client.didReceive(
+            event: .disconnected("Handshake rejected", 1002),
+            client: socket
+        )
+        XCTAssertEqual(
+            client.lastConnectionDiagnostic,
+            "WebSocket disconnected code=1002 reason=Handshake rejected"
+        )
+
+        let error = WSError(
+            type: .serverError,
+            message: "Upgrade failed",
+            code: 400
+        )
+        client.didReceive(event: .error(error), client: socket)
+        XCTAssertEqual(
+            client.lastConnectionDiagnostic,
+            "WebSocket error type=serverError code=400 description=Upgrade failed"
+        )
+
+        client.didReceive(
+            event: .error(
+                HTTPUpgradeError.notAnUpgrade(
+                    302,
+                    [
+                        "location": "/login",
+                        "server": "Signal K",
+                        "x-private-header": "must not be logged"
+                    ]
+                )
+            ),
+            client: socket
+        )
+        XCTAssertEqual(
+            client.lastConnectionDiagnostic,
+            "WebSocket HTTP upgrade rejected status=302 headers=location=/login,server=Signal K"
+        )
     }
 
     private func doubleValue(_ value: CodableValue?) -> Double? {
