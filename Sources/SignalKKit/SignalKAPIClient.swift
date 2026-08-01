@@ -240,10 +240,12 @@ public class SignalKAPIClient: ObservableObject {
                 #endif
                 return try await performGetRequest(path: path, retryOnAuth: false)
             }
-            
+
             #if DEBUG
             print("[SignalKAPIClient] GET: no token available after retry")
             #endif
+
+            throw unavailableAccessError
         }
         
         guard httpResponse.statusCode == 200 else {
@@ -266,10 +268,7 @@ public class SignalKAPIClient: ObservableObject {
             #if DEBUG
             print("[SignalKAPIClient] PUT: no access token available after ensureTokenAvailable, pendingHref=\(String(describing: pendingHref))")
             #endif
-            if pendingHref != nil {
-                throw SignalKError.accessRequestPending
-            }
-            throw SignalKError.noAccessToken
+            throw unavailableAccessError
         }
         guard let baseURL = baseURL else {
             #if DEBUG
@@ -377,6 +376,16 @@ public class SignalKAPIClient: ObservableObject {
         }
 
         return getBoolValue(forKey: deniedStateKey)
+    }
+
+    private var unavailableAccessError: SignalKError {
+        if isDenied {
+            return .accessDenied
+        }
+        if pendingHref != nil {
+            return .accessRequestPending
+        }
+        return .noAccessToken
     }
 
     private func clearDeniedState() {

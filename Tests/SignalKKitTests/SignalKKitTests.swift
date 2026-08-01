@@ -55,6 +55,33 @@ final class SignalKKitTests: XCTestCase {
         XCTAssertEqual(client.accessRequestClientIdentifier, clientIdentifier)
     }
 
+    func testPutReportsDeniedAccessInsteadOfMissingToken() async throws {
+        let client = SignalKAPIClient()
+        let host = "denied-\(UUID().uuidString.lowercased()).local"
+        let url = try XCTUnwrap(URL(string: "http://\(host):3000"))
+        let deniedStateKey = try XCTUnwrap(
+            SignalKAPIClient.serverScopedStorageKey(for: "deniedState", baseURL: url)
+        )
+        UserDefaults.standard.set(true, forKey: deniedStateKey)
+        NSUbiquitousKeyValueStore.default.set(true, forKey: deniedStateKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: deniedStateKey)
+            NSUbiquitousKeyValueStore.default.removeObject(forKey: deniedStateKey)
+        }
+
+        client.setBaseURL(url)
+        XCTAssertEqual(client.accessAuthorizationState, .denied)
+
+        do {
+            try await client.put(path: "/signalk/v1/api/vessels/self", data: Data())
+            XCTFail("Expected denied access to prevent the PUT request")
+        } catch SignalKError.accessDenied {
+            // Expected.
+        } catch {
+            XCTFail("Expected accessDenied, received \(error)")
+        }
+    }
+
     func testDeltaPublishesValuesOnceWithPerUpdateTimestamps() throws {
         let client = SignalKClient()
         let socket = WebSocketClientStub()
