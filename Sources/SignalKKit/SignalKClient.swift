@@ -2,12 +2,19 @@ import Foundation
 import Combine
 import Starscream
 
+protocol SignalKWebSocket: WebSocketClient {
+    var delegate: WebSocketDelegate? { get set }
+}
+
+extension WebSocket: SignalKWebSocket {}
+
 public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // Generic store for arbitrary subscribed path -> value
     @Published public var pathValues: [String: CodableValue] = [:]
     @Published public var pathTimestamps: [String: Date] = [:]
 
-    private var socket: WebSocket?
+    private var socket: SignalKWebSocket?
+    private let socketFactory: (URLRequest) -> SignalKWebSocket
     private var cancellables = Set<AnyCancellable>()
     private var connected = false
     @Published public private(set) var isConnected: Bool = false
@@ -21,7 +28,13 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     /// SignalKKit to a particular logging framework.
     @Published public private(set) var lastConnectionDiagnostic: String? = nil
 
-    public init() {}
+    public convenience init() {
+        self.init(socketFactory: { WebSocket(request: $0) })
+    }
+
+    init(socketFactory: @escaping (URLRequest) -> SignalKWebSocket) {
+        self.socketFactory = socketFactory
+    }
 
     // Optional: automatic subscribe=all on by default for compatibility; apps can turn off
     public var subscribeAllOnConnect: Bool = true
@@ -56,8 +69,9 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     @Published public private(set) var hasValidToken: Bool = false
     @Published public private(set) var isTokenRequestPending: Bool = false
 
-    // Queue of subscriptions requested before or after connect
-    private var pendingSubscriptions: [SignalKSubscriptionRequest] = []
+    // Desired subscriptions belong to the client, not to one socket. Keep them
+    // across reconnects and replay the complete set whenever a new socket opens.
+    private var desiredSubscriptions: [SignalKSubscriptionRequest] = []
     private var pendingRequests: [String: CheckedContinuation<SignalKRequestResponse, Error>] = [:]
     private static let fractionalISO8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -68,13 +82,26 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
 
     // Request the server to subscribe to custom Signal K paths
     public func subscribe(paths: [SignalKSubscriptionRequest]) {
-        pendingSubscriptions.append(contentsOf: paths)
-        sendPendingSubscriptionsIfConnected()
+        guard !paths.isEmpty else { return }
+
+        for request in paths {
+            if let index = desiredSubscriptions.firstIndex(where: { $0.path == request.path }) {
+                desiredSubscriptions[index] = request
+            } else {
+                desiredSubscriptions.append(request)
+            }
+        }
+
+        sendSubscriptions(paths, ifConnectedTo: socket)
     }
 
     // Unsubscribe from paths
     public func unsubscribe(paths: [String]) {
-        guard let socket = self.socket, connected, !paths.isEmpty else { return }
+        guard !paths.isEmpty else { return }
+        let removedPaths = Set(paths)
+        desiredSubscriptions.removeAll { removedPaths.contains($0.path) }
+
+        guard let socket = self.socket, connected else { return }
         let message: [String: Any] = [
             "context": context,
             "unsubscribe": paths.map { ["path": $0] }
@@ -137,6 +164,9 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     }
 
     public func connect(to host: String, port: Int) {
+        if socket != nil {
+            disconnect()
+        }
         lastConnectionDiagnostic = nil
         // Store connection info
         connectedHost = host
@@ -173,10 +203,10 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         if let token = token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        socket = WebSocket(request: request)
-        socket?.delegate = self
-        
-        socket?.connect()
+        let newSocket = socketFactory(request)
+        socket = newSocket
+        newSocket.delegate = self
+        newSocket.connect()
     }
 
     private static func urlEncodedHost(from host: String) -> String {
@@ -236,19 +266,32 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     }
 
     public func disconnect() {
-        socket?.disconnect()
+        let closingSocket = socket
+        socket = nil
+        closingSocket?.delegate = nil
+        connected = false
+        if isConnected {
+            isConnected = false
+        }
         connectedHost = nil
         connectedPort = nil
         connectionURL = nil
+        failPendingRequests(with: SignalKWebSocketRequestError.notConnected)
+        closingSocket?.disconnect(closeCode: 1000)
     }
 
     public func didReceive(event: WebSocketEvent, client: WebSocketClient) {
+        guard let socket,
+              ObjectIdentifier(socket) == ObjectIdentifier(client) else {
+            return
+        }
+
         switch event {
         case .connected(_):
-            // Send any pending custom requests
+            // Replay the client's desired subscriptions for this socket.
             connected = true
             isConnected = true
-            sendPendingSubscriptionsIfConnected()
+            sendSubscriptions(desiredSubscriptions, ifConnectedTo: socket)
         case .text(let text):
             if !handleRequestResponse(jsonString: text) {
                 parseDelta(jsonString: text)
@@ -336,17 +379,18 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         return statusCode == 401
     }
 
-    private func sendPendingSubscriptionsIfConnected() {
-        guard let socket = self.socket, connected, !pendingSubscriptions.isEmpty else { return }
+    private func sendSubscriptions(
+        _ subscriptions: [SignalKSubscriptionRequest],
+        ifConnectedTo socket: SignalKWebSocket?
+    ) {
+        guard let socket, connected, !subscriptions.isEmpty else { return }
         let subscribeMessage: [String: Any] = [
             "context": context,
-            "subscribe": pendingSubscriptions.map { $0.toDictionary() }
+            "subscribe": subscriptions.map { $0.toDictionary() }
         ]
         if let data = try? JSONSerialization.data(withJSONObject: subscribeMessage, options: []),
            let json = String(data: data, encoding: .utf8) {
             socket.write(string: json)
-            // Clear once sent to avoid duplicate re-sends on reconnect unless re-queued
-            pendingSubscriptions.removeAll()
         }
     }
 
