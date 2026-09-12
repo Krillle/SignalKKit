@@ -73,13 +73,6 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
     // across reconnects and replay the complete set whenever a new socket opens.
     private var desiredSubscriptions: [SignalKSubscriptionRequest] = []
     private var pendingRequests: [String: CheckedContinuation<SignalKRequestResponse, Error>] = [:]
-    private static let fractionalISO8601Formatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    private static let plainISO8601Formatter = ISO8601DateFormatter()
-
     // Request the server to subscribe to custom Signal K paths
     public func subscribe(paths: [SignalKSubscriptionRequest]) {
         guard !paths.isEmpty else { return }
@@ -402,7 +395,7 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         var timestampUpdates: [String: Date] = [:]
         var valueUpdates: [String: CodableValue] = [:]
         for update in delta.updates {
-            let timestamp = Self.parseISO8601Date(update.timestamp) ?? Date()
+            let timestamp = SignalKTimestampParser.date(from: update.timestamp) ?? Date()
             for v in update.values {
                 // Effective path: prefer value.path; else use update.path
                 guard let rawPath = v.path ?? update.path else { continue }
@@ -443,11 +436,6 @@ public final class SignalKClient: ObservableObject, WebSocketDelegate {
         }
     }
     
-    private static func parseISO8601Date(_ string: String?) -> Date? {
-        guard let string else { return nil }
-        return fractionalISO8601Formatter.date(from: string) ?? plainISO8601Formatter.date(from: string)
-    }
-
     private func handleRequestResponse(jsonString: String) -> Bool {
         guard let data = jsonString.data(using: .utf8),
               let response = try? JSONDecoder().decode(SignalKRequestResponse.self, from: data),
